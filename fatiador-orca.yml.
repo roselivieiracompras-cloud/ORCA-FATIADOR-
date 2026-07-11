@@ -1,0 +1,83 @@
+name: Orca Slicer - Fatiamento com Histórico Organizado
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fatiar_e_organizar:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: 1. Baixar arquivos do repositório
+      uses: actions/checkout@v4
+
+    - name: 2. Instalar dependências de sistema e tela virtual
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb libwebkit2gtk-4.1-0 libglu1-mesa libgomp1
+
+    - name: 3. Baixar o Orca Slicer oficial (AppImage)
+      run: |
+        curl -L -o OrcaSlicer.AppImage https://github.com
+        chmod +x OrcaSlicer.AppImage
+
+    - name: 4. Executar fatiamento e organizar arquivo por data
+      run: |
+        # Configura o fuso horário para o Brasil para a data ficar correta
+        export TZ="America/Sao_Paulo"
+        DATA_ATUAL=$(date +'%Y-%m-%d_%H-%M')
+        
+        # Cria a pasta de gcodes se ela não existir
+        mkdir -p gcodes
+        
+        # Busca pelos arquivos no repositório
+        ARQUIVO_3MF=$(find . -maxdepth 1 -name "*.3mf" | head -n 1)
+        ARQUIVO_STL=$(find . -maxdepth 1 -name "*.stl" | head -n 1)
+        ARQUIVO_CONFIG=$(find . -maxdepth 1 -name "*.json" | head -n 1)
+        
+        if [ ! -z "$ARQUIVO_3MF" ]; then
+          NOME_BASE=$(basename "$ARQUIVO_3MF" .3mf)
+          NOME_SAIDA="gcodes/${DATA_ATUAL}_${NOME_BASE}.gcode"
+          echo "Processando projeto 3MF: $ARQUIVO_3MF"
+          
+          xvfb-run --auto-servernum ./OrcaSlicer.AppImage \
+            --slice 0 \
+            --output "$NOME_SAIDA" \
+            "$ARQUIVO_3MF"
+            
+        elif [ ! -z "$ARQUIVO_STL" ] && [ ! -z "$ARQUIVO_CONFIG" ]; then
+          NOME_BASE=$(basename "$ARQUIVO_STL" .stl)
+          NOME_SAIDA="gcodes/${DATA_ATUAL}_${NOME_BASE}.gcode"
+          echo "Processando STL: $ARQUIVO_STL com configuração JSON"
+          
+          xvfb-run --auto-servernum ./OrcaSlicer.AppImage \
+            --slice 0 \
+            --load-settings "$ARQUIVO_CONFIG" \
+            --output "$NOME_SAIDA" \
+            "$ARQUIVO_STL"
+            
+        else
+          echo "ERRO: Nenhum arquivo válido encontrado (.3mf OU .stl + .json)."
+          exit 1
+        fi
+
+    - name: 5. Salvar novos G-codes no repositório
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@://github.com"
+        
+        # Adiciona apenas o conteúdo da pasta gcodes
+        git add gcodes/
+        
+        # Commita se houver arquivos novos
+        if git status --porcelain | grep -q 'gcodes/'; then
+          git commit -m "Auto: Novo G-code adicionado ao histórico [skip ci]"
+          git push
+        else
+          echo "Nenhum G-code novo para salvar."
+        fi
